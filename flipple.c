@@ -11,6 +11,7 @@
 #define TAG           "Flipple"
 #define STATS_FILE    "stats.txt"
 #define WORDLIST_FILE "wordlist.txt"
+#define REEL_LENGTH   9
 
 const char* word_list[] = {"APPLE", "BERRY", "CHAIR", "DANCE", "EAGLE", "FLAME", "GRAPE", "HOUSE",
                            "IMAGE", "JUICE", "KNIFE", "LEMON", "MOUSE", "NIGHT", "OCEAN", "PIZZA",
@@ -21,13 +22,12 @@ const char* word_list[] = {"APPLE", "BERRY", "CHAIR", "DANCE", "EAGLE", "FLAME",
 #define WORD_COUNT (sizeof(word_list) / sizeof(word_list[0]))
 
 typedef struct {
-    char guesses[FLIPPLE_MAX_GUESSES][FLIPPLE_WORD_LENGTH + 1];
-    uint8_t states[FLIPPLE_MAX_GUESSES][FLIPPLE_WORD_LENGTH];
-    int current_guess;
-    int current_letter;
+    char reels[FLIPPLE_WORD_LENGTH][REEL_LENGTH];
+    uint8_t selected[FLIPPLE_WORD_LENGTH];
+    uint8_t feedback[FLIPPLE_WORD_LENGTH];
+    uint8_t active_row;
+    uint8_t keys_left;
     char target[FLIPPLE_WORD_LENGTH + 1];
-    int cursor_x;
-    int cursor_y;
     bool game_over;
     bool win;
     FuriMutex* mutex;
@@ -53,35 +53,53 @@ static const char* wordlist_path(void) {
     return APP_ASSETS_PATH(WORDLIST_FILE);
 }
 
-const char* keyboard[3] = {"QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM<>"};
-const int key_counts[3] = {10, 9, 9};
+static const int8_t reel_offsets[REEL_LENGTH] = {-12, -7, -4, -1, 0, 2, 5, 9, 13};
 
-static void draw_tile(Canvas* canvas, int x, int y, char ch, uint8_t state, bool active) {
-    if(state == FLIPPLE_TILE_GREEN) {
-        canvas_draw_box(canvas, x, y, 8, 8);
+static void draw_reel_tile(
+    Canvas* canvas,
+    int x,
+    int y,
+    char ch,
+    bool centered,
+    bool active,
+    uint8_t feedback) {
+    const int tile_w = 13;
+    const int tile_h = 9;
+    bool filled = centered && feedback != FLIPPLE_TILE_EMPTY;
+
+    if(filled) {
+        canvas_draw_box(canvas, x, y, tile_w, tile_h);
         canvas_set_color(canvas, ColorWhite);
-    } else if(state == FLIPPLE_TILE_YELLOW) {
-        canvas_draw_frame(canvas, x, y, 8, 8);
-        canvas_draw_line(canvas, x + 1, y + 6, x + 6, y + 6);
-    } else if(state == FLIPPLE_TILE_GRAY) {
-        canvas_draw_frame(canvas, x, y, 8, 8);
-        canvas_draw_dot(canvas, x + 3, y + 3);
     } else {
-        canvas_draw_frame(canvas, x, y, 8, 8);
+        canvas_draw_frame(canvas, x, y, tile_w, tile_h);
     }
 
-    if(active && state == FLIPPLE_TILE_EMPTY) {
-        canvas_draw_line(canvas, x + 1, y + 1, x + 6, y + 6);
-    }
+    char str[2] = {ch, '\0'};
+    canvas_draw_str(canvas, x + 4, y + 8, str);
 
-    if(ch != '\0') {
-        char str[2] = {ch, '\0'};
-        canvas_draw_str(canvas, x + 2, y + 7, str);
-    }
-
-    if(state == FLIPPLE_TILE_GREEN) {
+    if(filled) {
         canvas_set_color(canvas, ColorBlack);
+        if(feedback == FLIPPLE_TILE_GREEN) {
+            canvas_draw_line(canvas, x + 3, y + tile_h - 2, x + tile_w - 4, y + tile_h - 2);
+        }
     }
+
+    if(active && centered) {
+        canvas_draw_frame(canvas, x - 2, y - 2, tile_w + 4, tile_h + 4);
+    }
+}
+
+static void draw_key_counter(Canvas* canvas, const FlippleModel* m) {
+    canvas_draw_frame(canvas, 40, 56, 18, 8);
+    canvas_draw_circle(canvas, 47, 60, 3);
+    canvas_draw_dot(canvas, 47, 60);
+    canvas_draw_line(canvas, 50, 60, 55, 60);
+    canvas_draw_line(canvas, 54, 60, 54, 62);
+
+    char count[8];
+    snprintf(count, sizeof(count), "x%u", (unsigned int)m->keys_left);
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 64, 63, count);
 }
 
 static void draw_callback(Canvas* canvas, void* ctx) {
@@ -90,87 +108,44 @@ static void draw_callback(Canvas* canvas, void* ctx) {
     furi_mutex_acquire(m->mutex, FuriWaitForever);
 
     canvas_clear(canvas);
-    canvas_set_font(canvas, FontSecondary);
-    canvas_draw_str(canvas, 2, 8, "Flipple");
-    canvas_draw_str(canvas, 56, 8, m->game_over ? (m->win ? "Solved" : "Failed") : "Guess");
-    canvas_draw_line(canvas, 0, 10, 127, 10);
+    canvas_set_font(canvas, FontKeyboard);
+    canvas_draw_frame(canvas, 54, 3, 20, 52);
+    canvas_draw_frame(canvas, 56, 5, 16, 48);
 
-    for(int r = 0; r < FLIPPLE_MAX_GUESSES; r++) {
-        for(int c = 0; c < FLIPPLE_WORD_LENGTH; c++) {
-            int x = 2 + c * 9;
-            int y = 13 + r * 8;
-            bool active = (!m->game_over && r == m->current_guess && c == m->current_letter);
-            draw_tile(canvas, x, y, m->guesses[r][c], m->states[r][c], active);
+    const int center_x = 58;
+    const int center_y = 7;
+    const int step_x = 15;
+    const int step_y = 10;
+
+    for(int row = 0; row < FLIPPLE_WORD_LENGTH; row++) {
+        int y = center_y + row * step_y;
+        for(int offset = -4; offset <= 4; offset++) {
+            int reel_index = (int)m->selected[row] + offset;
+            while(reel_index < 0)
+                reel_index += REEL_LENGTH;
+            reel_index %= REEL_LENGTH;
+
+            bool centered = offset == 0;
+            int x = center_x + offset * step_x;
+            draw_reel_tile(
+                canvas,
+                x,
+                y,
+                m->reels[row][reel_index],
+                centered,
+                row == m->active_row && !m->game_over,
+                centered ? m->feedback[row] : FLIPPLE_TILE_EMPTY);
         }
     }
 
-    canvas_set_font(canvas, FontSecondary);
-    if(m->game_over) {
-        char line[32];
-        snprintf(
-            line,
-            sizeof(line),
-            "G%lu W%lu S%lu",
-            (unsigned long)m->stats.games_played,
-            (unsigned long)m->stats.wins,
-            (unsigned long)m->stats.current_streak);
-        canvas_draw_str(canvas, 49, 20, line);
-        snprintf(
-            line,
-            sizeof(line),
-            "Best %lu / %lu",
-            (unsigned long)m->stats.best_score,
-            (unsigned long)m->stats.best_streak);
-        canvas_draw_str(canvas, 49, 29, line);
-        canvas_draw_str(canvas, 49, 38, "OK new game");
-        canvas_draw_str(canvas, 49, 47, "Back exit");
-    } else {
-        canvas_draw_str(canvas, 49, 20, "Controls");
-        canvas_draw_str(canvas, 49, 29, "Arrows move");
-        canvas_draw_str(canvas, 49, 38, "OK type");
-        canvas_draw_str(canvas, 49, 47, "Back del");
-        canvas_draw_str(canvas, 49, 56, "Hold BACK exit");
-    }
+    draw_key_counter(canvas, m);
 
     if(m->game_over) {
-        canvas_draw_frame(canvas, 48, 13, 78, 34);
-        if(m->win) {
-            canvas_draw_str(canvas, 56, 25, "You win");
-            canvas_draw_str(canvas, 56, 35, "Press OK");
-        } else {
-            canvas_draw_str(canvas, 56, 25, "Target");
-            canvas_draw_str(canvas, 56, 35, m->target);
-        }
-    } else {
-        int kb_x = 50;
-        int kb_y = 13;
-        canvas_set_font(canvas, FontKeyboard);
-        for(int r = 0; r < 3; r++) {
-            for(int c = 0; c < key_counts[r]; c++) {
-                int kx = kb_x + c * 7 + (r == 1 ? 3 : 0) + (r == 2 ? 6 : 0);
-                int ky = kb_y + r * 13;
-                char ch = keyboard[r][c];
-                bool selected = (m->cursor_y == r && m->cursor_x == c);
-
-                if(selected) {
-                    canvas_draw_box(canvas, kx - 1, ky - 1, 7, 10);
-                    canvas_set_color(canvas, ColorWhite);
-                }
-
-                if(ch == '<') {
-                    canvas_draw_str(canvas, kx, ky + 8, "DEL");
-                } else if(ch == '>') {
-                    canvas_draw_str(canvas, kx, ky + 8, "OK");
-                } else {
-                    char str[2] = {ch, '\0'};
-                    canvas_draw_str(canvas, kx, ky + 8, str);
-                }
-
-                if(selected) {
-                    canvas_set_color(canvas, ColorBlack);
-                }
-            }
-        }
+        canvas_set_font(canvas, FontSecondary);
+        canvas_draw_box(canvas, 82, 55, 45, 9);
+        canvas_set_color(canvas, ColorWhite);
+        canvas_draw_str(canvas, 85, 63, m->win ? "SOLVED" : m->target);
+        canvas_set_color(canvas, ColorBlack);
     }
 
     furi_mutex_release(m->mutex);
@@ -181,22 +156,46 @@ static void input_callback(InputEvent* input_event, void* ctx) {
     furi_message_queue_put(app->event_queue, input_event, 0);
 }
 
-static void stats_reset_session(FlippleModel* m) {
-    memset(m->guesses, 0, sizeof(m->guesses));
-    memset(m->states, 0, sizeof(m->states));
-    m->current_guess = 0;
-    m->current_letter = 0;
-    m->game_over = false;
-    m->win = false;
-    m->cursor_x = 0;
-    m->cursor_y = 0;
+static void build_reels(FlippleModel* m) {
+    for(size_t row = 0; row < FLIPPLE_WORD_LENGTH; row++) {
+        char target = m->target[row];
+        for(size_t col = 0; col < REEL_LENGTH; col++) {
+            int letter = (target - 'A' + reel_offsets[col]) % 26;
+            if(letter < 0) letter += 26;
+            m->reels[row][col] = (char)('A' + letter);
+        }
+        m->selected[row] = (uint8_t)((row * 2 + 1) % REEL_LENGTH);
+        if(m->selected[row] == 4) {
+            m->selected[row] = 5;
+        }
+    }
 }
 
-static void delete_last_letter(FlippleModel* m) {
-    if(m->current_letter > 0) {
-        m->current_letter--;
-        m->guesses[m->current_guess][m->current_letter] = '\0';
+static void start_round(FlippleModel* m, const char* target) {
+    strcpy(m->target, target);
+    memset(m->feedback, 0, sizeof(m->feedback));
+    build_reels(m);
+    m->active_row = 0;
+    m->keys_left = FLIPPLE_MAX_GUESSES;
+    m->game_over = false;
+    m->win = false;
+}
+
+static void current_word(const FlippleModel* m, char word[FLIPPLE_WORD_LENGTH + 1]) {
+    for(size_t row = 0; row < FLIPPLE_WORD_LENGTH; row++) {
+        word[row] = m->reels[row][m->selected[row]];
     }
+    word[FLIPPLE_WORD_LENGTH] = '\0';
+}
+
+static void rotate_active_reel(FlippleModel* m, int delta) {
+    if(m->feedback[m->active_row] == FLIPPLE_TILE_GREEN) return;
+
+    int next = (int)m->selected[m->active_row] + delta;
+    while(next < 0)
+        next += REEL_LENGTH;
+    m->selected[m->active_row] = (uint8_t)(next % REEL_LENGTH);
+    m->feedback[m->active_row] = FLIPPLE_TILE_EMPTY;
 }
 
 static void stats_load(FlippleModel* m) {
@@ -301,25 +300,27 @@ static size_t
     return count;
 }
 
-static void process_guess(FlippleModel* m) {
-    if(m->current_letter < FLIPPLE_WORD_LENGTH) return;
+static void submit_guess(FlippleModel* m) {
+    if(m->game_over || m->keys_left == 0) return;
 
+    char guess[FLIPPLE_WORD_LENGTH + 1];
+    current_word(m, guess);
     FlippleGuessResult result = {0};
-    flipple_evaluate_guess(m->target, m->guesses[m->current_guess], &result);
-    memcpy(m->states[m->current_guess], result.states, sizeof(result.states));
+    flipple_evaluate_guess(m->target, guess, &result);
+    memcpy(m->feedback, result.states, sizeof(result.states));
 
     if(result.win) {
         m->game_over = true;
         m->win = true;
-        flipple_apply_round_result(&m->stats, true, (uint32_t)m->current_guess);
+        flipple_apply_round_result(
+            &m->stats, true, (uint32_t)(FLIPPLE_MAX_GUESSES - m->keys_left));
         m->stats_dirty = true;
     } else {
-        m->current_guess++;
-        m->current_letter = 0;
-        if(m->current_guess >= FLIPPLE_MAX_GUESSES) {
+        m->keys_left--;
+        if(m->keys_left == 0) {
             m->game_over = true;
             m->win = false;
-            flipple_apply_round_result(&m->stats, false, (uint32_t)m->current_guess);
+            flipple_apply_round_result(&m->stats, false, FLIPPLE_MAX_GUESSES - 1);
             m->stats_dirty = true;
         }
     }
@@ -375,6 +376,8 @@ int32_t flipple_app(void* p) {
         }
         app->runtime_word_count = WORD_COUNT;
     }
+    word_idx = rand() % app->runtime_word_count;
+    start_round(app->model, app->runtime_word_list[word_idx]);
 
     InputEvent input;
     while(furi_message_queue_get(app->event_queue, &input, FuriWaitForever) == FuriStatusOk) {
@@ -386,54 +389,28 @@ int32_t flipple_app(void* p) {
             furi_mutex_acquire(app->model->mutex, FuriWaitForever);
 
             if(input.key == InputKeyBack) {
-                if(app->model->game_over) {
-                    furi_mutex_release(app->model->mutex);
-                    break;
-                }
-                delete_last_letter(app->model);
-                stats_save(app->model);
                 furi_mutex_release(app->model->mutex);
-                view_port_update(app->view_port);
-                continue;
+                break;
             }
 
             if(!app->model->game_over) {
                 if(input.key == InputKeyLeft) {
-                    if(app->model->cursor_x > 0) app->model->cursor_x--;
+                    rotate_active_reel(app->model, -1);
                 } else if(input.key == InputKeyRight) {
-                    if(app->model->cursor_x < key_counts[app->model->cursor_y] - 1)
-                        app->model->cursor_x++;
+                    rotate_active_reel(app->model, 1);
                 } else if(input.key == InputKeyUp) {
-                    if(app->model->cursor_y > 0) {
-                        app->model->cursor_y--;
-                        if(app->model->cursor_x >= key_counts[app->model->cursor_y])
-                            app->model->cursor_x = key_counts[app->model->cursor_y] - 1;
-                    }
+                    if(app->model->active_row > 0) app->model->active_row--;
                 } else if(input.key == InputKeyDown) {
-                    if(app->model->cursor_y < 2) {
-                        app->model->cursor_y++;
-                        if(app->model->cursor_x >= key_counts[app->model->cursor_y])
-                            app->model->cursor_x = key_counts[app->model->cursor_y] - 1;
-                    }
+                    if(app->model->active_row < FLIPPLE_WORD_LENGTH - 1) app->model->active_row++;
                 } else if(input.key == InputKeyOk) {
-                    char c = keyboard[app->model->cursor_y][app->model->cursor_x];
-                    if(c == '<') {
-                        delete_last_letter(app->model);
-                    } else if(c == '>') {
-                        process_guess(app->model);
-                    } else if(app->model->current_letter < FLIPPLE_WORD_LENGTH) {
-                        app->model->guesses[app->model->current_guess][app->model->current_letter] =
-                            c;
-                        app->model->current_letter++;
-                    }
+                    submit_guess(app->model);
                 }
             } else {
                 if(input.key == InputKeyOk) {
-                    stats_reset_session(app->model);
                     tick = furi_hal_rtc_get_timestamp();
                     srand(tick + rand());
                     word_idx = rand() % app->runtime_word_count;
-                    strcpy(app->model->target, app->runtime_word_list[word_idx]);
+                    start_round(app->model, app->runtime_word_list[word_idx]);
                 }
             }
 

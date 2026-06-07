@@ -4,18 +4,19 @@ Flipple is a compact five-letter word guessing game for Flipper Zero.
 
 ## Gameplay
 
-- Pick letters from the on-screen keyboard with the directional pad.
-- Press `OK` to enter the selected key.
-- Use `Back` to delete the previous letter while playing.
-- Hold `Back` to exit the app.
-- Submit a guess with the on-screen `OK` key.
-- Solve the word in six guesses.
+- Each row is a horizontal letter reel.
+- The framed vertical lane is the current guess.
+- Use `Up` and `Down` to choose a row.
+- Use `Left` and `Right` to rotate that row.
+- Press `OK` to spend a key and test the centered word.
+- Hold `Back` or press `Back` to exit the app.
+- Solve the word before the key counter reaches zero.
 
 ## Feedback
 
-- Filled tile: correct letter in the correct position.
-- Underlined tile: correct letter in a different position.
-- Dotted tile: letter is not in the answer.
+- Filled centered tile: revealed letter.
+- Underlined filled tile: correct letter locked in the correct position.
+- Unfilled centered tile: untested letter.
 
 ## Data
 
@@ -37,4 +38,3 @@ Run the host-side engine test:
 cc -std=c11 -Wall -Wextra -Werror -I. tests/engine_test.c flipple_engine.c -o /tmp/flipple_engine_test
 /tmp/flipple_engine_test
 ```
-
