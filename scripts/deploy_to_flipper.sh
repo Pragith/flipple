@@ -29,7 +29,7 @@ build_if_possible() {
 find_flipper_volume() {
   for mount in /Volumes/*; do
     [ -d "$mount" ] || continue
-    if [ -d "$mount/apps" ] || [ -d "$mount/ext/apps" ] || [ -d "$mount/.fseventsd" ]; then
+    if [ -d "$mount/ext/apps" ] || [ -d "$mount/apps" ]; then
       printf '%s\n' "$mount"
       return 0
     fi
@@ -66,10 +66,10 @@ install_fap() {
 
 install_wordlist() {
   local volume="$1"
-  local data_dir="$volume/ext/apps_data/${APP_NAME}"
-  mkdir -p "$data_dir"
-  cp "$WORDLIST_SRC" "$data_dir/wordlist.txt"
-  log "installed to $data_dir/wordlist.txt"
+  local assets_dir="$volume/ext/apps_assets/${APP_NAME}"
+  mkdir -p "$assets_dir"
+  cp "$WORDLIST_SRC" "$assets_dir/wordlist.txt"
+  log "installed to $assets_dir/wordlist.txt"
 }
 
 main() {
