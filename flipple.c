@@ -41,6 +41,8 @@ typedef struct {
     ViewPort* view_port;
     Gui* gui;
     FuriMessageQueue* event_queue;
+    char (*runtime_word_list)[FLIPPLE_WORD_LENGTH + 1];
+    size_t runtime_word_count;
 } FlippleApp;
 
 static const char* stats_path(void) {
@@ -362,13 +364,16 @@ int32_t flipple_app(void* p) {
 
     gui_add_view_port(app->gui, app->view_port, GuiLayerFullscreen);
 
-    char runtime_word_list[WORD_COUNT][FLIPPLE_WORD_LENGTH + 1];
-    size_t runtime_word_count = load_wordlist(app->model->storage, runtime_word_list, WORD_COUNT);
-    if(runtime_word_count == 0) {
+    app->runtime_word_list = malloc(sizeof(char[WORD_COUNT][FLIPPLE_WORD_LENGTH + 1]));
+    if(!app->runtime_word_list) goto cleanup;
+
+    app->runtime_word_count =
+        load_wordlist(app->model->storage, app->runtime_word_list, WORD_COUNT);
+    if(app->runtime_word_count == 0) {
         for(size_t i = 0; i < WORD_COUNT; i++) {
-            strcpy(runtime_word_list[i], word_list[i]);
+            strcpy(app->runtime_word_list[i], word_list[i]);
         }
-        runtime_word_count = WORD_COUNT;
+        app->runtime_word_count = WORD_COUNT;
     }
 
     InputEvent input;
@@ -427,8 +432,8 @@ int32_t flipple_app(void* p) {
                     stats_reset_session(app->model);
                     tick = furi_hal_rtc_get_timestamp();
                     srand(tick + rand());
-                    word_idx = rand() % runtime_word_count;
-                    strcpy(app->model->target, runtime_word_list[word_idx]);
+                    word_idx = rand() % app->runtime_word_count;
+                    strcpy(app->model->target, app->runtime_word_list[word_idx]);
                 }
             }
 
@@ -456,6 +461,9 @@ cleanup:
             furi_record_close(RECORD_STORAGE);
         }
         free(app->model);
+    }
+    if(app->runtime_word_list) {
+        free(app->runtime_word_list);
     }
     if(app->gui) {
         furi_record_close(RECORD_GUI);
