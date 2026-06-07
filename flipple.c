@@ -326,7 +326,14 @@ static void process_guess(FlippleModel* m) {
 int32_t flipple_app(void* p) {
     UNUSED(p);
     FlippleApp* app = malloc(sizeof(FlippleApp));
+    if(!app) return 255;
+    memset(app, 0, sizeof(FlippleApp));
+
     app->model = malloc(sizeof(FlippleModel));
+    if(!app->model) {
+        free(app);
+        return 255;
+    }
     memset(app->model, 0, sizeof(FlippleModel));
 
     uint32_t tick = furi_hal_rtc_get_timestamp();
@@ -335,15 +342,24 @@ int32_t flipple_app(void* p) {
     strcpy(app->model->target, word_list[word_idx]);
 
     app->model->mutex = furi_mutex_alloc(FuriMutexTypeNormal);
+    if(!app->model->mutex) goto cleanup;
+
     app->model->storage = furi_record_open(RECORD_STORAGE);
+    if(!app->model->storage) goto cleanup;
+
     stats_load(app->model);
     app->event_queue = furi_message_queue_alloc(8, sizeof(InputEvent));
+    if(!app->event_queue) goto cleanup;
 
     app->view_port = view_port_alloc();
+    if(!app->view_port) goto cleanup;
+
     view_port_draw_callback_set(app->view_port, draw_callback, app);
     view_port_input_callback_set(app->view_port, input_callback, app);
 
     app->gui = furi_record_open(RECORD_GUI);
+    if(!app->gui) goto cleanup;
+
     gui_add_view_port(app->gui, app->view_port, GuiLayerFullscreen);
 
     char runtime_word_list[WORD_COUNT][FLIPPLE_WORD_LENGTH + 1];
@@ -422,13 +438,28 @@ int32_t flipple_app(void* p) {
         view_port_update(app->view_port);
     }
 
-    gui_remove_view_port(app->gui, app->view_port);
-    view_port_free(app->view_port);
-    furi_message_queue_free(app->event_queue);
-    furi_mutex_free(app->model->mutex);
-    furi_record_close(RECORD_STORAGE);
-    free(app->model);
+cleanup:
+    if(app->gui && app->view_port) {
+        gui_remove_view_port(app->gui, app->view_port);
+    }
+    if(app->view_port) {
+        view_port_free(app->view_port);
+    }
+    if(app->event_queue) {
+        furi_message_queue_free(app->event_queue);
+    }
+    if(app->model) {
+        if(app->model->mutex) {
+            furi_mutex_free(app->model->mutex);
+        }
+        if(app->model->storage) {
+            furi_record_close(RECORD_STORAGE);
+        }
+        free(app->model);
+    }
+    if(app->gui) {
+        furi_record_close(RECORD_GUI);
+    }
     free(app);
-    furi_record_close(RECORD_GUI);
     return 0;
 }
