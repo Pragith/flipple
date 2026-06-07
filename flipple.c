@@ -25,6 +25,8 @@ typedef struct {
     char reels[FLIPPLE_WORD_LENGTH][REEL_LENGTH];
     uint8_t selected[FLIPPLE_WORD_LENGTH];
     uint8_t feedback[FLIPPLE_WORD_LENGTH];
+    uint8_t left_span[FLIPPLE_WORD_LENGTH];
+    uint8_t right_span[FLIPPLE_WORD_LENGTH];
     uint8_t active_row;
     uint8_t keys_left;
     char target[FLIPPLE_WORD_LENGTH + 1];
@@ -114,12 +116,12 @@ static void draw_callback(Canvas* canvas, void* ctx) {
 
     const int center_x = 58;
     const int center_y = 7;
-    const int step_x = 15;
+    const int step_x = 16;
     const int step_y = 10;
 
     for(int row = 0; row < FLIPPLE_WORD_LENGTH; row++) {
         int y = center_y + row * step_y;
-        for(int offset = -4; offset <= 4; offset++) {
+        for(int offset = -(int)m->left_span[row]; offset <= (int)m->right_span[row]; offset++) {
             int reel_index = (int)m->selected[row] + offset;
             while(reel_index < 0)
                 reel_index += REEL_LENGTH;
@@ -168,6 +170,11 @@ static void build_reels(FlippleModel* m) {
         if(m->selected[row] == 4) {
             m->selected[row] = 5;
         }
+
+        uint8_t visible_count = (uint8_t)(3 + (rand() % 6));
+        uint8_t extra = visible_count - 1;
+        m->left_span[row] = (uint8_t)(rand() % (extra + 1));
+        m->right_span[row] = (uint8_t)(extra - m->left_span[row]);
     }
 }
 
